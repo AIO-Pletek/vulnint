@@ -175,16 +175,180 @@ Rebuild:
 
 
 ================================================================================
-  CARA B: Load Balancer TLS di depan (Cloudflare / Caddy / Traefik / AWS ALB)
+  CARA B: Load Balancer TLS di depan (Traefik / AWS ALB / Cloudflare)
 ================================================================================
 
-Kalau sudah ada reverse proxy yang handle SSL:
+Kalau sudah ada reverse proxy yang handle SSL selain Caddy:
 
 1. TIDAK PERUBAHAN di NGINX VulnInt — biarkan port 80 saja
 2. Arahkan LB ke port 80 host VPS
 3. Set header X-Forwarded-Proto: https di LB
 4. Update NEXT_PUBLIC_API_URL dan CORS_ORIGINS di .env ke https
 5. Rebuild: make build && make up
+
+
+================================================================================
+  CARA C: Caddy sebagai reverse proxy + auto TLS (direkomendasikan)
+================================================================================
+
+Caddy otomatis generate dan renew sertifikat Let's Encrypt, cukup tulis
+beberapa baris konfigurasi. Tidak perlu certbot, tidak perlu cron.
+
+Pendekatan: Caddy sebagai container tambahan di docker-compose, NGINX
+dipindah ke port internal (8080) atau langsung bypass ke frontend:3000.
+
+
+C1. INSTALL CADDY (SEBAGAI CONTAINER)
+---------------------------------------
+
+Tidak perlu install di host. Caddy akan berjalan sebagai service di
+docker-compose.yml bareng service lainnya.
+
+
+C2. BUAT CADDYFILE
+-------------------
+
+Buat file: docker/caddy/Caddyfile
+
+    vulnint.example.com {
+
+        # Security headers
+        header {
+            X-Content-Type-Options "nosniff"
+            X-Frame-Options "DENY"
+            Referrer-Policy "strict-origin-when-cross-origin"
+            Permissions-Policy "geolocation=(), microphone=(), camera=()"
+            Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        }
+
+        # API backend (FastAPI)
+        handle /api/* {
+            reverse_proxy api:8000 {
+                header_up Host {host}
+                header_up X-Forwarded-Proto https
+                header_up X-Real-IP {remote_host}
+            }
+        }
+
+        # API docs
+        handle /docs* {
+            reverse_proxy api:8000
+        }
+        handle /redoc* {
+            reverse_proxy api:8000
+        }
+        handle /openapi.json* {
+            reverse_proxy api:8000
+        }
+
+        # Health check
+        handle /health {
+            reverse_proxy api:8000
+        }
+
+        # Frontend (Next.js)
+        handle {
+            reverse_proxy frontend:3000 {
+                header_up Host {host}
+                header_up X-Forwarded-Proto https
+            }
+        }
+
+        # Rate limiting
+        rate_limit {
+            zone dynamic {
+                key {remote_host}
+                events 120/m
+                window 1m
+            }
+        }
+    }
+
+
+C3. TAMBAHKAN CADDY DI DOCKER-COMPOSE
+---------------------------------------
+
+Edit docker-compose.yml:
+
+(1) Tambahkan service caddy:
+
+    caddy:
+      image: caddy:2-alpine
+      restart: unless-stopped
+      ports:
+        - "80:80"
+        - "443:443"
+      volumes:
+        - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+        - caddy_data:/data
+        - caddy_config:/config
+      networks:
+        - vulnint
+
+(2) Hapus atau comment service nginx (tidak diperlukan lagi):
+
+    # nginx:
+    #   image: nginx:1.27-alpine
+    #   ...
+
+(3) Tambahkan volume di paling bawah:
+
+    volumes:
+      pgdata:
+      redisdata:
+      osdata:
+      caddy_data:
+      caddy_config:
+
+
+C4. UPDATE ENV
+---------------
+
+Edit .env:
+
+    NEXT_PUBLIC_API_URL=https://vulnint.example.com/api/v1
+    CORS_ORIGINS=["https://vulnint.example.com"]
+
+
+C5. BUILD & START
+------------------
+
+    cd /opt/vulnint
+    docker compose down
+    docker compose up -d
+
+
+C6. VERIFIKASI
+---------------
+
+    curl -fsS https://vulnint.example.com/health
+    # Harus return: {"status":"ok"}
+
+    curl -I https://vulnint.example.com
+    # Harus ada header: Strict-Transport-Security, X-Frame-Options, dll
+
+Caddy akan otomatis renew sertifikat 30 hari sebelum expired. Tidak perlu
+cron job tambahan.
+
+
+C7. (OPSIONAL) CADDY DI HOST LANGSUNG
+--------------------------------------
+
+Kalau ingin Caddy di host (bukan container), arahkan ke port yang
+di-expose oleh frontend (3000) dan api (8000).
+
+Install Caddy di host:
+
+    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
+    sudo apt install caddy
+
+Edit /etc/caddy/Caddyfile (pakai isi yang sama seperti C2 di atas, tapi
+arahkan proxy ke localhost:3000 dan localhost:8000).
+
+    sudo systemctl reload caddy
 
 
 ================================================================================
