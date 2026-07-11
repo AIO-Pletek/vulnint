@@ -54,7 +54,8 @@ def upgrade() -> None:
         ),
         sa.Column(
             "severity",
-            sa.Enum("none", "low", "medium", "high", "critical", name="severity"),
+            sa.Enum("none", "low", "medium", "high", "critical", name="severity",
+                    create_type=False),  # severity type already exists (created in 0001)
             nullable=False,
         ),
         sa.Column(
