@@ -1,0 +1,2 @@
+# TLS certificates go here. See docs/DEPLOYMENT.md for setup with certbot.
+# This directory is intentionally empty in the repo.

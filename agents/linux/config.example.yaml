@@ -1,0 +1,18 @@
+# VulnInt Linux agent — example config
+# Copy to /etc/vulnint/agent.yaml (mode 600, root:root)
+
+# Base URL of the VulnInt API (no trailing slash)
+api_url: "https://vulnint.example.com"
+
+# Agent token (issued when the server is registered in the dashboard)
+agent_token: "REPLACE_ME"
+
+# Seconds between automatic runs in daemon mode (the systemd timer
+# also handles scheduling, so this is mostly informational)
+interval: 21600
+
+# TLS verification — set to "false" only for self-signed dev certs
+verify_tls: true
+
+# Where offline reports are queued for retry
+queue_dir: "/var/spool/vulnint"
