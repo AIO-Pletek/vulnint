@@ -12,6 +12,8 @@ x-backend-base: &backend-base
       condition: service_healthy
   restart: unless-stopped
   networks: [vulnint]
+  volumes:
+    - ./agents:/agents:ro
 
 services:
   postgres:

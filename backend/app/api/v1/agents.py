@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-_AGENTS_DIR = Path(__file__).resolve().parents[4] / "agents"
+# Agents directory is mounted at /agents in docker-compose (read-only)
+_AGENTS_DIR = Path("/agents")
 
 _FILE_MAP = {
     "linux": {
