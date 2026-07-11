@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import Link from "next/link";
-import { ArrowRight, ShieldAlert, Server, Bell, Database, Flame, Loader2 } from "lucide-react";
+import { ArrowRight, ShieldAlert, Server, Bell, Database, Flame, Loader2, ShieldCheck } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid } from "recharts";
 import { Topbar } from "@/components/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ type Overview = {
   cves: { total: number; added_30d: number };
   open_correlations: { by_severity: Record<string, number>; kev: number; total: number };
   alerts: { recent_30d: number; pending: number };
+  audit_findings: { total_open: number; by_severity: Record<string, number> };
   trend_30d: { date: string; count: number }[];
 };
 
@@ -77,6 +78,14 @@ export default function OverviewPage() {
                 value={overview?.alerts.recent_30d ?? 0}
                 hint={`${overview?.alerts.pending ?? 0} pending dispatch`}
                 href="/dashboard/alerts"
+              />
+              <StatCard
+                icon={<ShieldCheck className="h-4 w-4" />}
+                label="Security findings"
+                value={overview?.audit_findings.total_open ?? 0}
+                hint={`${overview?.audit_findings.by_severity?.critical ?? 0} critical, ${overview?.audit_findings.by_severity?.high ?? 0} high`}
+                href="/dashboard/servers"
+                tone={overview?.audit_findings.total_open ? (overview.audit_findings.total_open > 5 ? "destructive" : "default") : "default"}
               />
             </div>
 

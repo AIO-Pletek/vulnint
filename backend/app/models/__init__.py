@@ -11,3 +11,4 @@ from app.models.vulnerability import (  # noqa
 )
 from app.models.alert import Alert, AlertRule  # noqa
 from app.models.audit import AuditLog  # noqa
+from app.models.audit_finding import AuditFinding  # noqa

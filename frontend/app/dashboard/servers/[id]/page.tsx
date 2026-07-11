@@ -4,13 +4,14 @@ import * as React from "react";
 import useSWR, { mutate } from "swr";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, RefreshCw, Loader2, Trash2, Copy, Check } from "lucide-react";
+import { ArrowLeft, RefreshCw, Loader2, Trash2, Copy, Check, FileDown } from "lucide-react";
 import { Topbar } from "@/components/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SeverityBadge } from "@/components/ui/severity-badge";
+import { AuditFindingCard, AuditCategoryLabel } from "@/components/ui/audit-finding-card";
 import * as Dialog from "@radix-ui/react-dialog";
 import { api, fetcher } from "@/lib/api";
 import { formatDate, formatRelative } from "@/lib/utils";
@@ -29,12 +30,20 @@ type Correlation = {
   first_seen_at: string | null; last_seen_at: string | null;
 };
 type CorrelationPage = { items: Correlation[]; total: number; page: number; page_size: number };
+type AuditFinding = {
+  id: string; category: string; check_name: string;
+  severity: string; status: string;
+  title: string; description: string; remediation: string;
+  evidence: Record<string, any>; created_at: string; updated_at: string;
+};
+type AuditFindingsResponse = { server_id: string; findings: AuditFinding[]; summary: Record<string, number> };
 
 export default function ServerDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const { data: server } = useSWR<Server>(`/servers/${id}`, fetcher);
   const { data: corr } = useSWR<CorrelationPage>(`/correlations?server_id=${id}&status=open&page_size=50`, fetcher);
+  const { data: audit, mutate: mutateAudit } = useSWR<AuditFindingsResponse>(`/servers/${id}/findings`, fetcher);
   const [tokenDialog, setTokenDialog] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
 
@@ -43,6 +52,18 @@ export default function ServerDetailPage() {
     try {
       const res = await api<{ api_token: string }>(`/servers/${id}/regen-token`, { method: "POST" });
       setTokenDialog(res.api_token);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  async function updateFindingStatus(findingId: string, newStatus: string) {
+    try {
+      await api(`/servers/findings/${findingId}`, {
+        method: "PATCH",
+        json: { status: newStatus },
+      });
+      mutateAudit();
     } catch (e: any) {
       alert(e.message);
     }
@@ -89,6 +110,11 @@ export default function ServerDetailPage() {
                   <div>Last check-in: <span className="text-foreground">{formatRelative(server.last_seen_at)}</span></div>
                   <div>Added: {formatDate(server.created_at).split(",")[0]}</div>
                   <div className="flex gap-2 mt-2">
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={`/api/v1/servers/${id}/report`} target="_blank" rel="noreferrer">
+                        <FileDown className="h-3 w-3" /> Report
+                      </a>
+                    </Button>
                     <Button size="sm" variant="outline" onClick={regenToken}>
                       <RefreshCw className="h-3 w-3" /> Regen token
                     </Button>
@@ -140,6 +166,65 @@ export default function ServerDetailPage() {
                     )}
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+
+            {/* ─── Security Audit ──────────────────────────────────────────── */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">
+                  Security audit
+                  {audit && audit.findings.length > 0 && ` (${audit.findings.filter(f => f.status === 'open').length} open)`}
+                </CardTitle>
+                <CardDescription>
+                  Configuration and posture checks from the latest agent run.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!audit ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading audit data…
+                  </div>
+                ) : audit.findings.length === 0 ? (
+                  <div className="py-8 text-center text-muted-foreground">
+                    No security issues found. System looks well-configured. ✅
+                  </div>
+                ) : (
+                  <>
+                    {/* Severity summary */}
+                    <div className="flex items-center gap-3 mb-4 flex-wrap">
+                      {["critical", "high", "medium", "low"].map((s) =>
+                        audit.summary[s] ? (
+                          <div key={s} className="flex items-center gap-1 text-xs">
+                            <SeverityBadge value={s} />
+                            <span className="font-semibold">{audit.summary[s]}</span>
+                          </div>
+                        ) : null
+                      )}
+                    </div>
+
+                    {/* Grouped by category */}
+                    {(["ssh", "firewall", "updates", "services", "misc"] as const).map((cat) => {
+                      const items = audit.findings.filter((f) => f.category === cat);
+                      if (items.length === 0) return null;
+                      return (
+                        <div key={cat} className="mb-3 last:mb-0">
+                          <AuditCategoryLabel category={cat} />
+                          <div className="mt-1 space-y-1.5">
+                            {items.map((f) => (
+                              <AuditFindingCard
+                                key={f.id}
+                                finding={f}
+                                onAcknowledge={(id) => updateFindingStatus(id, "acknowledged")}
+                                onIgnore={(id) => updateFindingStatus(id, "ignored")}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
               </CardContent>
             </Card>
           </>

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
+from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.agent_token import generate_agent_token
@@ -12,10 +16,19 @@ from app.auth.deps import require_permissions
 from app.auth.permissions import Perm
 from app.core.database import get_db
 from app.models.server import OSFamily
+from app.repositories.audit_finding import AuditFindingRepo
 from app.repositories.server import ServerRepo
 from app.schemas.auth import CurrentUser
 from app.schemas.common import Page
-from app.schemas.server import ServerCreate, ServerOut, ServerUpdate, ServerWithToken
+from app.schemas.server import (
+    AuditFindingOut,
+    AuditFindingUpdate,
+    AuditFindingsResponse,
+    ServerCreate,
+    ServerOut,
+    ServerUpdate,
+    ServerWithToken,
+)
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -139,3 +152,104 @@ async def delete_server(
     if not s:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await repo.soft_delete(s)
+
+
+# ── Audit findings ─────────────────────────────────────────────────────────
+
+
+@router.get("/{server_id}/findings", response_model=AuditFindingsResponse)
+async def get_server_findings(
+    server_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(require_permissions(Perm.SERVER_READ)),
+):
+    """Return all security audit findings for a server, grouped by category."""
+    # Verify server exists
+    srv_repo = ServerRepo(db)
+    srv = await srv_repo.get(server_id)
+    if not srv:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    repo = AuditFindingRepo(db)
+    findings = await repo.get_for_server(server_id)
+
+    sev_order = ["critical", "high", "medium", "low", "none"]
+    summary: dict[str, int] = {s: 0 for s in sev_order}
+    for f in findings:
+        key = f.severity.value
+        summary[key] = summary.get(key, 0) + 1
+    summary = {k: v for k, v in summary.items() if v > 0 or k in ("critical", "high")}
+
+    return AuditFindingsResponse(
+        server_id=server_id,
+        findings=[AuditFindingOut.model_validate(f) for f in findings],
+        summary=summary,
+    )
+
+
+@router.patch("/findings/{finding_id}", response_model=AuditFindingOut)
+async def update_finding_status(
+    finding_id: uuid.UUID,
+    body: AuditFindingUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(require_permissions(Perm.SERVER_WRITE)),
+):
+    """Acknowledge or ignore a security audit finding."""
+    repo = AuditFindingRepo(db)
+    finding = await repo.update_status(finding_id, body.status.value)
+    if not finding:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Finding not found")
+    return AuditFindingOut.model_validate(finding)
+
+
+# ── Report generation ──────────────────────────────────────────────────────
+
+_TEMPLATES_DIR = Path(__file__).resolve().parents[4] / "app" / "templates"
+_jinja = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
+
+
+def _render_audit_report(server, findings: list, summary: dict) -> str:
+    categories = ["ssh", "firewall", "updates", "services", "misc"]
+    grouped = []
+    for cat in categories:
+        items = [f for f in findings if f.category.value == cat]
+        grouped.append({"name": cat, "findings": items})
+
+    tpl = _jinja.get_template("audit_report.html.j2")
+    return tpl.render(
+        hostname=server.hostname,
+        os_family=server.os_family.value if server.os_family else "?",
+        os_version=server.os_version or "",
+        kernel=server.kernel or "",
+        ip_address=server.ip_address or "",
+        environment=server.environment.value if server.environment else "production",
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        summary=summary,
+        categories=grouped,
+        total=len(findings),
+    )
+
+
+@router.get("/{server_id}/report", response_class=HTMLResponse)
+async def get_server_report(
+    server_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(require_permissions(Perm.SERVER_READ)),
+):
+    """Generate an HTML security audit report for this server."""
+    srv_repo = ServerRepo(db)
+    srv = await srv_repo.get(server_id)
+    if not srv:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    repo = AuditFindingRepo(db)
+    findings = await repo.get_for_server(server_id)
+
+    sev_order = ["critical", "high", "medium", "low", "none"]
+    summary: dict[str, int] = {s: 0 for s in sev_order}
+    for f in findings:
+        key = f.severity.value
+        summary[key] = summary.get(key, 0) + 1
+
+    html = _render_audit_report(srv, findings, summary)
+    return HTMLResponse(content=html)

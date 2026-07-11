@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.audit_finding import AuditCategory, FindingStatus
 from app.models.server import Environment, OSFamily
+from app.models.vulnerability import Severity
 
 
 class ServerBase(BaseModel):
@@ -58,6 +60,16 @@ class InstalledPackageIn(BaseModel):
     source: Optional[str] = None  # dpkg|rpm|kb|cpanel
 
 
+class AuditFacts(BaseModel):
+    """Security posture facts collected by the agent. Each section is a
+    raw dict — the backend rules engine evaluates them into findings."""
+    ssh: Optional[Dict[str, Any]] = None
+    firewall: Optional[Dict[str, Any]] = None
+    updates: Optional[Dict[str, Any]] = None
+    services: Optional[Dict[str, Any]] = None
+    misc: Optional[Dict[str, Any]] = None
+
+
 class InventoryReport(BaseModel):
     """Payload sent by the agent."""
     hostname: str
@@ -68,9 +80,39 @@ class InventoryReport(BaseModel):
     cpanel_version: Optional[str] = None
     packages: List[InstalledPackageIn] = Field(default_factory=list)
     raw_payload: dict = Field(default_factory=dict)
+    audit: Optional[AuditFacts] = None  # NEW — security audit facts
 
 
 class InventoryAccepted(BaseModel):
     inventory_id: uuid.UUID
     package_count: int
     correlation_job_id: Optional[str] = None
+
+
+# ── Audit finding schemas ─────────────────────────────────────────────────
+
+
+class AuditFindingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    server_id: uuid.UUID
+    category: AuditCategory
+    check_name: str
+    severity: Severity
+    status: FindingStatus
+    title: str
+    description: str
+    remediation: str
+    evidence: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuditFindingUpdate(BaseModel):
+    status: FindingStatus
+
+
+class AuditFindingsResponse(BaseModel):
+    server_id: uuid.UUID
+    findings: List[AuditFindingOut]
+    summary: Dict[str, int]  # {"critical": N, "high": N, ...}

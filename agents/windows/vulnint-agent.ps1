@@ -117,6 +117,111 @@ function Get-InstalledSoftware {
         }
 }
 
+# ─── Security audit ─────────────────────────────────────────────────────────
+function Get-SecurityAudit {
+    $audit = [ordered]@{}
+
+    # -- Firewall profiles ----------------------------------------------------
+    try {
+        $profiles = Get-NetFirewallProfile -ErrorAction Stop
+        $fwProfiles = [ordered]@{}
+        foreach ($p in $profiles) {
+            $fwProfiles[$p.Name.ToLower()] = $p.Enabled -eq 'True'
+        }
+        $audit.firewall = [ordered]@{
+            active   = ($profiles | Where-Object { $_.Enabled }).Count -gt 0
+            type     = 'windows-firewall'
+            default_policy = if (($profiles | Where-Object { $_.DefaultInboundAction -eq 'Block' }).Count -gt 0) { 'block' } else { 'allow' }
+            profiles = $fwProfiles
+        }
+    } catch {
+        $audit.firewall = [ordered]@{ active = $false; type = 'windows-firewall'; default_policy = 'unknown'; profiles = @{} }
+    }
+
+    # -- Windows Update status ------------------------------------------------
+    $updates = [ordered]@{ last_updated = $null; pending_security = 0; auto_updates = $null }
+    try {
+        $auKey = 'HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate\AU'
+        if (Test-Path $auKey) {
+            $noAuto = (Get-ItemProperty $auKey -Name NoAutoUpdate -ErrorAction SilentlyContinue).NoAutoUpdate
+            $updates.auto_updates = $noAuto -eq 0
+        }
+    } catch {}
+
+    try {
+        $latest = Get-HotFix -ErrorAction Stop |
+                  Sort-Object InstalledOn -Descending |
+                  Select-Object -First 1
+        if ($latest -and $latest.InstalledOn) {
+            $updates.last_updated = ([DateTime]$latest.InstalledOn).ToUniversalTime().ToString('o')
+        }
+    } catch {}
+
+    $audit.updates = $updates
+
+    # -- RDP / SMBv1 / UAC / Guest / PowerShell --------------------------------
+    $misc = [ordered]@{}
+    try {
+        $tsKey = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
+        $fDeny = (Get-ItemProperty $tsKey -Name fDenyTSConnections -ErrorAction SilentlyContinue).fDenyTSConnections
+        $nlaVal = (Get-ItemProperty "$tsKey\WinStations\RDP-Tcp" -Name UserAuthentication -ErrorAction SilentlyContinue).UserAuthentication
+        $misc.rdp = [ordered]@{
+            enabled      = $fDeny -eq 0
+            nla_required = $nlaVal -eq 1
+        }
+    } catch {
+        $misc.rdp = [ordered]@{ enabled = $false; nla_required = $false }
+    }
+
+    try {
+        $smb1 = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction Stop
+        $misc.smbv1_enabled = $smb1.State -eq 'Enabled'
+    } catch {
+        $misc.smbv1_enabled = $false
+    }
+
+    try {
+        $lua = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA
+        $misc.uac_enabled = $lua -eq 1
+    } catch {
+        $misc.uac_enabled = $true
+    }
+
+    try {
+        $guest = Get-LocalUser -Name Guest -ErrorAction Stop
+        $misc.guest_enabled = $guest.Enabled
+    } catch {
+        $misc.guest_enabled = $false
+    }
+
+    try {
+        $misc.powershell_execution_policy = (Get-ExecutionPolicy -Scope LocalMachine -ErrorAction Stop).ToString()
+    } catch {
+        $misc.powershell_execution_policy = 'Unknown'
+    }
+
+    $audit.misc = $misc
+
+    # -- Listening services ---------------------------------------------------
+    $svc = [ordered]@{ listening = @() }
+    try {
+        $conns = Get-NetTCPConnection -State Listen -ErrorAction Stop
+        $entries = foreach ($c in $conns) {
+            $proc = $null
+            try { $proc = (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).ProcessName } catch {}
+            [ordered]@{
+                port    = $c.LocalPort
+                bind    = $c.LocalAddress
+                service = if ($proc) { "$proc" } else { 'unknown' }
+            }
+        }
+        $svc.listening = @($entries)
+    } catch {}
+    $audit.services = $svc
+
+    return $audit
+}
+
 # ─── HTTP send ────────────────────────────────────────────────────────────────
 function Send-Inventory {
     param($Cfg, $Payload)
@@ -193,6 +298,7 @@ function Invoke-Run {
             kb_count      = ($packages | Where-Object { $_.source -eq 'kb' }).Count
             sw_count      = ($packages | Where-Object { $_.source -eq 'msi' }).Count
         }
+        audit           = Get-SecurityAudit
     }
 
     Write-Log 'INFO' "Collected $($packages.Count) entries (KBs + software)"

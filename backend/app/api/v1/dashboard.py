@@ -11,6 +11,7 @@ from app.auth.deps import require_permissions
 from app.auth.permissions import Perm
 from app.core.database import get_db
 from app.models.alert import Alert, AlertStatus
+from app.models.audit_finding import AuditFinding, FindingStatus
 from app.models.server import Server
 from app.models.vulnerability import CVE, Correlation, CorrelationStatus, Severity
 from app.schemas.auth import CurrentUser
@@ -73,6 +74,18 @@ async def overview(
         select(func.count()).select_from(Alert).where(Alert.status == AlertStatus.pending)
     )).scalar_one()
 
+    # Audit findings — open by severity
+    finding_rows = (await db.execute(
+        select(AuditFinding.severity, func.count())
+        .where(AuditFinding.status == FindingStatus.open)
+        .group_by(AuditFinding.severity)
+    )).all()
+    finding_by_severity = {s.value: 0 for s in Severity}
+    finding_total = 0
+    for sev, n in finding_rows:
+        finding_by_severity[sev.value] = int(n)
+        finding_total += int(n)
+
     # Trend: correlations opened per day, last 30d
     trend_rows = (await db.execute(
         select(
@@ -94,6 +107,10 @@ async def overview(
             "total": sum(by_severity.values()),
         },
         "alerts": {"recent_30d": int(alerts_recent), "pending": int(alerts_pending)},
+        "audit_findings": {
+            "total_open": finding_total,
+            "by_severity": finding_by_severity,
+        },
         "trend_30d": trend,
     }
 

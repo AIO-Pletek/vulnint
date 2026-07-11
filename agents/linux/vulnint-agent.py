@@ -165,6 +165,310 @@ def collect_packages(os_family: str) -> list[dict[str, Any]]:
     return collect_dpkg() or collect_rpm()
 
 
+# ─── Security audit ────────────────────────────────────────────────────────────
+
+def _parse_sshd_config(path: str = "/etc/ssh/sshd_config") -> dict[str, Any]:
+    """Parse sshd_config into a dict of directive → value."""
+    result: dict[str, Any] = {}
+    p = Path(path)
+    if not p.exists():
+        return result
+    try:
+        for line in p.read_text(errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split(None, 1)
+            if len(parts) >= 2:
+                result[parts[0].lower()] = parts[1].strip()
+            elif len(parts) == 1:
+                result[parts[0].lower()] = ""
+    except Exception:
+        pass
+    return result
+
+
+def _collect_ssh_audit(os_family: str) -> dict[str, Any]:
+    """Gather SSH configuration posture."""
+    ssh: dict[str, Any] = {}
+    try:
+        cfg = _parse_sshd_config()
+        # PermitRootLogin: map variants to simple values
+        rl = cfg.get("permitrootlogin", "").lower()
+        ssh["root_login"] = rl if rl else "not_found"
+        ssh["password_auth"] = cfg.get("passwordauthentication", "").lower()
+        ssh["protocol"] = cfg.get("protocol", "")
+        # Ciphers / MACs
+        ciphers_raw = cfg.get("ciphers", "")
+        ssh["ciphers"] = [c.strip() for c in ciphers_raw.split(",") if c.strip()] if ciphers_raw else []
+        macs_raw = cfg.get("macs", "")
+        ssh["macs"] = [m.strip() for m in macs_raw.split(",") if m.strip()] if macs_raw else []
+        ssh["x11_forwarding"] = cfg.get("x11forwarding", "").lower()
+    except Exception:
+        pass
+    return ssh
+
+
+def _collect_firewall_audit() -> dict[str, Any]:
+    """Check firewall status."""
+    fw: dict[str, Any] = {"active": None, "type": "none", "default_policy": "unknown"}
+
+    # Try ufw
+    try:
+        out = subprocess.check_output(
+            ["ufw", "status"], stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        fw["type"] = "ufw"
+        fw["active"] = "Status: active" in out
+        if fw["active"]:
+            for line in out.splitlines():
+                line_s = line.strip()
+                if line_s.lower().startswith("default:") and "deny" in line_s.lower():
+                    fw["default_policy"] = "deny"
+                elif line_s.lower().startswith("default:") and "allow" in line_s.lower():
+                    fw["default_policy"] = "allow"
+        return fw
+    except Exception:
+        pass
+
+    # Try firewalld
+    try:
+        out = subprocess.check_output(
+            ["firewall-cmd", "--state"], stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        fw["type"] = "firewalld"
+        fw["active"] = "running" in out.lower()
+        if fw["active"]:
+            try:
+                zone = subprocess.check_output(
+                    ["firewall-cmd", "--get-default-zone"],
+                    stderr=subprocess.DEVNULL, text=True, timeout=5,
+                ).strip()
+                target = subprocess.check_output(
+                    ["firewall-cmd", "--zone", zone, "--get-target"],
+                    stderr=subprocess.DEVNULL, text=True, timeout=5,
+                ).strip().lower()
+                fw["default_policy"] = target
+            except Exception:
+                pass
+        return fw
+    except Exception:
+        pass
+
+    # Fallback iptables
+    try:
+        out = subprocess.check_output(
+            ["iptables", "-L", "INPUT", "-n"],
+            stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        fw["type"] = "iptables"
+        policy_line = out.splitlines()[0] if out.splitlines() else ""
+        fw["active"] = "policy" in policy_line.lower()
+        if "DROP" in policy_line or "REJECT" in policy_line:
+            fw["default_policy"] = "deny"
+        elif "ACCEPT" in policy_line:
+            fw["default_policy"] = "allow"
+        return fw
+    except Exception:
+        pass
+
+    fw["active"] = False  # No firewall found
+    return fw
+
+
+def _collect_updates_audit(os_family: str) -> dict[str, Any]:
+    """Get OS update status."""
+    updates: dict[str, Any] = {
+        "last_updated": None, "pending_security": 0, "auto_updates": None,
+    }
+
+    if os_family in ("ubuntu", "debian"):
+        # Last update from apt history
+        try:
+            hp = Path("/var/log/apt/history.log")
+            if hp.exists():
+                for line in hp.read_text(errors="replace").splitlines():
+                    if line.startswith("Start-Date:"):
+                        ts = line.split("Start-Date:", 1)[1].strip()
+                        # "2024-07-01  12:34:56"
+                        try:
+                            dt = datetime.strptime(ts.strip()[:19], "%Y-%m-%d  %H:%M:%S")
+                            updates["last_updated"] = dt.replace(tzinfo=timezone.utc).isoformat()
+                        except ValueError:
+                            pass
+                        break  # most recent is first
+        except Exception:
+            pass
+
+        # Pending security updates
+        try:
+            out = subprocess.check_output(
+                ["apt-get", "-s", "upgrade"], stderr=subprocess.DEVNULL, text=True, timeout=30,
+            )
+            count = 0
+            for line in out.splitlines():
+                if line.startswith("Inst ") and "security" in line.lower():
+                    count += 1
+            updates["pending_security"] = count
+        except Exception:
+            pass
+
+        # Unattended-upgrades
+        try:
+            auto_paths = [
+                "/etc/apt/apt.conf.d/20auto-upgrades",
+                "/etc/apt/apt.conf.d/50unattended-upgrades",
+            ]
+            for ap in auto_paths:
+                if Path(ap).exists():
+                    content = Path(ap).read_text(errors="replace")
+                    if "1" in content:
+                        updates["auto_updates"] = True
+                        break
+            else:
+                updates["auto_updates"] = False
+        except Exception:
+            pass
+
+    elif os_family in ("almalinux", "rocky", "cloudlinux"):
+        # Last DNF transaction
+        try:
+            hp = Path("/var/log/dnf.log")
+            if hp.exists():
+                text = hp.read_text(errors="replace")
+                lines = text.splitlines()
+                if lines:
+                    # Parse ISO timestamps like "2024-07-01T12:34:56Z" or "2024-07-01T12:34:56+0000"
+                    for line in reversed(lines):
+                        try:
+                            ts = line.split(" ")[0] if " " in line else line[:19]
+                            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                            updates["last_updated"] = dt.isoformat()
+                            break
+                        except (ValueError, IndexError):
+                            continue
+        except Exception:
+            pass
+
+        # Pending security updates
+        try:
+            out = subprocess.check_output(
+                ["dnf", "check-update", "--security"],
+                stderr=subprocess.DEVNULL, text=True, timeout=60,
+            )
+            # Count non-header, non-empty lines
+            count = sum(1 for line in out.splitlines() if line.strip() and not line.startswith("Last metadata"))
+            updates["pending_security"] = max(0, count)
+        except subprocess.CalledProcessError as e:
+            # dnf check-update returns 100 if updates exist
+            count = sum(1 for line in (e.output or "").splitlines() if line.strip() and not line.startswith("Last metadata"))
+            updates["pending_security"] = max(0, count)
+        except Exception:
+            pass
+
+        # DNF-automatic
+        try:
+            out = subprocess.check_output(
+                ["systemctl", "is-enabled", "dnf-automatic.timer"],
+                stderr=subprocess.DEVNULL, text=True, timeout=5,
+            )
+            updates["auto_updates"] = "enabled" in out.lower()
+        except Exception:
+            updates["auto_updates"] = False
+
+    return updates
+
+
+def _collect_services_audit() -> dict[str, Any]:
+    """Enumerate listening services."""
+    result: dict[str, Any] = {"listening": []}
+
+    def _parse_ports(out: str) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for line in out.splitlines()[1:]:  # skip header
+            line = line.strip()
+            if not line or line.startswith("State"):
+                continue
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            # ss format: Netid  State  Recv-Q Send-Q Local Address:Port Peer Address:Port
+            # netstat: Proto Recv-Q Send-Q Local Address   Foreign Address  State  PID/Program
+            local = parts[4] if len(parts) > 4 else ""
+            service = parts[6] if len(parts) > 6 else ""
+            if "/" in service:
+                service = service.split("/", 1)[-1] if "/" in service else service
+            if ":" in local:
+                addr, port_str = local.rsplit(":", 1)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    continue
+                entries.append({
+                    "port": port,
+                    "bind": addr,
+                    "service": service.strip() or "unknown",
+                })
+        return entries
+
+    try:
+        out = subprocess.check_output(
+            ["ss", "-tlnp"], stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        result["listening"] = _parse_ports(out)
+    except Exception:
+        try:
+            out = subprocess.check_output(
+                ["netstat", "-tlnp"], stderr=subprocess.DEVNULL, text=True, timeout=10,
+            )
+            result["listening"] = _parse_ports(out)
+        except Exception:
+            pass
+
+    return result
+
+
+def _collect_misc_audit() -> dict[str, Any]:
+    """Miscellaneous security checks."""
+    misc: dict[str, Any] = {}
+    # World-writable files in /etc
+    try:
+        out = subprocess.check_output(
+            ["find", "/etc", "-type", "f", "-perm", "-o+w"],
+            stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        misc["world_writable_etc"] = len([l for l in out.splitlines() if l.strip()])
+    except Exception:
+        misc["world_writable_etc"] = -1  # couldn't check
+
+    # SUID/SGID count (just count, don't enumerate)
+    try:
+        out = subprocess.check_output(
+            ["find", "/", "-path", "/proc", "-prune", "-o",
+             "-path", "/sys", "-prune", "-o",
+             "-path", "/dev", "-prune", "-o",
+             "-type", "f", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")",
+             "-printf", "."],
+            stderr=subprocess.DEVNULL, text=True, timeout=30,
+        )
+        misc["suid_sgid_count"] = len(out)
+    except Exception:
+        misc["suid_sgid_count"] = -1
+
+    return misc
+
+
+def collect_audit(os_family: str) -> dict[str, Any]:
+    """Collect security posture facts for the backend rules engine."""
+    return {
+        "ssh": _collect_ssh_audit(os_family),
+        "firewall": _collect_firewall_audit(),
+        "updates": _collect_updates_audit(os_family),
+        "services": _collect_services_audit(),
+        "misc": _collect_misc_audit(),
+    }
+
+
 # ─── HTTP transport ────────────────────────────────────────────────────────────
 
 class ApiError(Exception):
@@ -271,6 +575,7 @@ def collect_and_send(cfg: dict[str, Any]) -> int:
             "platform": platform.platform(),
             "collected_at": datetime.now(timezone.utc).isoformat(),
         },
+        "audit": collect_audit(os_family),
     }
     LOG.info("collected %d packages on %s %s", len(payload["packages"]), os_family, os_version or "")
     api_url = cfg.get("api_url")

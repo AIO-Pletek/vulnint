@@ -52,6 +52,7 @@ class Server(UUIDPrimaryKey, TimestampMixin, Base):
 
     inventories: Mapped[List["Inventory"]] = relationship(back_populates="server", cascade="all,delete")
     correlations = relationship("Correlation", back_populates="server", cascade="all,delete")
+    audit_findings = relationship("AuditFinding", back_populates="server", cascade="all,delete")
 
     __table_args__ = (
         UniqueConstraint("hostname", "ip_address", name="uq_servers_hostname_ip"),

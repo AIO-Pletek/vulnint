@@ -33,6 +33,10 @@ class Perm:
     # System / feeds
     FEEDS_TRIGGER = "feeds:trigger"
 
+    # Audit findings
+    AUDIT_FINDING_READ = "audit_finding:read"
+    AUDIT_FINDING_WRITE = "audit_finding:write"
+
 
 ALL_PERMISSIONS = [
     (Perm.SERVER_READ, "Read server inventory"),
@@ -51,6 +55,8 @@ ALL_PERMISSIONS = [
     (Perm.INVENTORY_INGEST, "Ingest agent inventory"),
     (Perm.AUDIT_READ, "Read audit logs"),
     (Perm.FEEDS_TRIGGER, "Manually trigger feeds"),
+    (Perm.AUDIT_FINDING_READ, "Read security audit findings"),
+    (Perm.AUDIT_FINDING_WRITE, "Manage security audit findings"),
 ]
 
 
@@ -59,7 +65,7 @@ DEFAULT_ROLES = {
     "admin": [p for p, _ in ALL_PERMISSIONS],
     "analyst": [
         Perm.SERVER_READ, Perm.CVE_READ, Perm.CORRELATION_READ, Perm.CORRELATION_WRITE,
-        Perm.ALERT_READ, Perm.AUDIT_READ,
+        Perm.ALERT_READ, Perm.AUDIT_READ, Perm.AUDIT_FINDING_READ,
     ],
     "viewer": [
         Perm.SERVER_READ, Perm.CVE_READ, Perm.CORRELATION_READ, Perm.ALERT_READ,
