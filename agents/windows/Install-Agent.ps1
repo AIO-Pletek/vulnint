@@ -32,7 +32,16 @@ foreach ($d in @($InstallDir, $DataDir)) {
 
 $ScriptSrc = Join-Path $PSScriptRoot 'vulnint-agent.ps1'
 $ScriptDst = Join-Path $InstallDir   'vulnint-agent.ps1'
-Copy-Item -Path $ScriptSrc -Destination $ScriptDst -Force
+
+# Try local copy first, then download from API
+if (Test-Path $ScriptSrc) {
+    Write-Host "  Using local vulnint-agent.ps1"
+    Copy-Item -Path $ScriptSrc -Destination $ScriptDst -Force
+} else {
+    Write-Host "  Downloading vulnint-agent.ps1 from API..."
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    Invoke-WebRequest -Uri "$($ApiUrl.TrimEnd('/'))/api/v1/agents/windows/agent" -OutFile $ScriptDst -UseBasicParsing
+}
 
 $Config = [ordered]@{
     ApiUrl     = $ApiUrl.TrimEnd('/')

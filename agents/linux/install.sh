@@ -38,9 +38,16 @@ chown root:root "$INSTALL_DIR" "$CONFIG_DIR"
 chmod 755 "$INSTALL_DIR" "$CONFIG_DIR"
 chmod 700 "$QUEUE_DIR"
 
-# Copy agent script (assumes it lives next to this installer)
+# Copy agent script — try local first, then download from API
 HERE="$(dirname "$(readlink -f "$0")")"
-install -m 0755 "$HERE/vulnint-agent.py" "$SCRIPT_PATH"
+if [[ -f "$HERE/vulnint-agent.py" ]]; then
+    echo "  Using local vulnint-agent.py"
+    install -m 0755 "$HERE/vulnint-agent.py" "$SCRIPT_PATH"
+else
+    echo "  Downloading vulnint-agent.py from API..."
+    curl -fsSL "${API_URL}/api/v1/agents/linux/agent" -o "$SCRIPT_PATH"
+    chmod 0755 "$SCRIPT_PATH"
+fi
 
 # Write config
 umask 077
