@@ -62,42 +62,18 @@ curl -fsS http://localhost/healthz   # 200 ok
 
 ## TLS termination
 
-Two supported patterns:
+Caddy (the default reverse proxy) **automatically provisions and renews**
+Let's Encrypt certificates. No manual steps required.
 
-### A) NGINX terminates TLS (default for single-host)
+1. Set your domain in `docker/caddy/Caddyfile` (replace `vulnint.example.com`
+   with your actual domain).
+2. Ensure port 80 and 443 are open and the domain DNS points to your VPS.
+3. Start the stack: `make up` — Caddy obtains certificates on first request.
 
-1. Obtain a cert (Let's Encrypt example):
+That's it. Renewals happen automatically 30 days before expiry.
 
-   ```bash
-   sudo apt-get install -y certbot
-   sudo certbot certonly --standalone -d vulnint.example.com
-   sudo mkdir -p ./docker/nginx/certs
-   sudo cp /etc/letsencrypt/live/vulnint.example.com/fullchain.pem ./docker/nginx/certs/
-   sudo cp /etc/letsencrypt/live/vulnint.example.com/privkey.pem   ./docker/nginx/certs/
-   ```
-
-2. Mount the certs and uncomment the HTTPS block in
-   `docker/nginx/conf.d/default.conf`. Add this to `docker-compose.yml`
-   under the `nginx` service:
-
-   ```yaml
-   volumes:
-     - ./docker/nginx/certs:/etc/nginx/certs:ro
-   ports:
-     - "443:443"
-   ```
-
-3. Renewal — add a cron job:
-
-   ```cron
-   0 3 * * * certbot renew --post-hook "cp /etc/letsencrypt/live/vulnint.example.com/*.pem /opt/vulnint/docker/nginx/certs/ && docker compose -f /opt/vulnint/docker-compose.yml exec nginx nginx -s reload"
-   ```
-
-### B) Front with a managed TLS LB (Caddy, Traefik, AWS ALB, …)
-
-Leave NGINX listening on `:80` only. Point your LB at the host's port 80
-and let the LB handle certificates and HTTP/2. No further config needed
-in this repo.
+For details on alternative TLS setups (external load balancer, Cloudflare, etc.),
+see [`docs/SSL_SETUP.txt`](docs/SSL_SETUP.txt).
 
 ---
 
@@ -166,7 +142,7 @@ The compose stack is single-host but each service scales horizontally.
 - [ ] Disable Postgres / Redis / OpenSearch port exposure on the host
       (compose only binds them to the internal Docker network — verify
       with `docker compose port postgres 5432`; should fail).
-- [ ] Set up log shipping for `nginx` access logs and the API's
+- [ ] Set up log shipping for Caddy access logs and the API's
       structured JSON logs.
 - [ ] Enable 2FA on all upstream feed accounts (NVD API key, GitHub for
       pull, etc.).

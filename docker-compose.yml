@@ -123,22 +123,20 @@ services:
     restart: unless-stopped
     networks: [vulnint]
 
-  nginx:
-    image: nginx:1.27-alpine
-    volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
-      # certs/ is created on first deploy (see docs/DEPLOYMENT.md).
-      # The .gitkeep ensures the directory exists so this bind-mount
-      # doesn't fail on a fresh clone before TLS is set up.
-      - ./docker/nginx/certs:/etc/nginx/certs:ro
+  caddy:
+    image: caddy:2-alpine
     ports:
       - "80:80"
-      # Uncomment the next line after configuring TLS in default.conf
-      # - "443:443"
+      - "443:443"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
-      - api
-      - frontend
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
     restart: unless-stopped
     networks: [vulnint]
 
@@ -146,6 +144,8 @@ volumes:
   pgdata:
   redisdata:
   osdata:
+  caddy_data:
+  caddy_config:
 
 networks:
   vulnint:

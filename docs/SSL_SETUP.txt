@@ -2,12 +2,17 @@
                     VULNINT — SSL/TLS SETUP GUIDE
 ================================================================================
 
-Proyek VulnInt sudah menyiapkan konfigurasi SSL di NGINX, tinggal diaktifkan.
-File konfigurasi: docker/nginx/conf.d/default.conf (blok HTTPS ada di baris 76-92)
+Default: Caddy reverse proxy dengan auto TLS (Let's Encrypt).
+Caddy sudah menjadi default di docker-compose.yml — ganti "vulnint.example.com"
+di docker/caddy/Caddyfile ke domain kamu, lalu start stack. Sertifikat
+otomatis terbit dan renew tanpa langkah manual.
 
 ================================================================================
-  CARA A: Let's Encrypt + NGINX langsung (gratis, single VPS)
+  CARA A: Let's Encrypt + NGINX (alternatif, jika tidak pakai Caddy)
 ================================================================================
+
+Catatan: cara ini hanya relevan jika kamu mengganti Caddy dengan NGINX manual.
+Default project sudah pakai Caddy — lihat Cara C.
 
 A1. DAPATKAN SERTIFIKAT (Let's Encrypt)
 -----------------------------------------
@@ -188,11 +193,10 @@ Kalau sudah ada reverse proxy yang handle SSL selain Caddy:
 
 
 ================================================================================
-  CARA C: Caddy sebagai reverse proxy + auto TLS (direkomendasikan)
+  CARA C: Caddy (DEFAULT — sudah ada di docker-compose.yml)
 ================================================================================
 
-Caddy otomatis generate dan renew sertifikat Let's Encrypt, cukup tulis
-beberapa baris konfigurasi. Tidak perlu certbot, tidak perlu cron.
+Caddy sudah menjadi reverse proxy default. Tidak perlu certbot,
 
 Pendekatan: Caddy sebagai container tambahan di docker-compose, NGINX
 dipindah ke port internal (8080) atau langsung bypass ke frontend:3000.

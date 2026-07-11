@@ -37,14 +37,13 @@ matching vulnerability is found.
           ├─────────────▶│OpenSearch│         ▲
           │              └──────────┘         │
           ▼                                   │
-   ┌──────────────┐                           │
-   │ Notification │                           │
-   │  channels    │       ┌───────┐           │
-   │ Email · TG · │       │ NGINX │───────────┘
-   │ Discord ·    │◀──────┤reverse│
-   │ Slack · SIEM │       │ proxy │
-   └──────────────┘       └───────┘
-```
+   ┌──────────────┐      ┌──────────┐         │
+   │ Notification │      │  Caddy   │─────────┘
+   │  channels    │◀─────┤ reverse  │
+   │ Email · TG · │      │ proxy    │
+   │ Discord ·    │      │+auto TLS │
+   │ Slack · SIEM │      └──────────┘
+   └──────────────┘
 
 ### Stack
 
@@ -52,7 +51,7 @@ matching vulnerability is found.
 - **Workers**: Celery + Redis broker, beat scheduler
 - **Storage**: PostgreSQL 16 + OpenSearch 2 (CVE search index)
 - **Frontend**: Next.js 14 App Router, TypeScript, Tailwind, Radix UI
-- **Edge**: NGINX reverse proxy with rate limits and TLS-ready config
+- **Edge**: Caddy reverse proxy with automatic TLS (Let's Encrypt) + rate limits
 - **Agents**: Linux (stdlib Python 3, systemd timer) and Windows
   (PowerShell, scheduled task)
 - **Auth**: JWT for users, hashed bearer tokens for agents, RBAC
@@ -132,7 +131,7 @@ vulnint/
 │   ├── linux/              Python 3 agent + systemd installer
 │   └── windows/            PowerShell agent + scheduled-task installer
 ├── docker/
-│   ├── nginx/              Reverse-proxy config (rate limits, TLS-ready)
+│   ├── caddy/              Reverse-proxy config + automatic TLS via Let's Encrypt
 │   └── postgres/           Init SQL (extensions)
 ├── docs/                   Deployment, agents, API
 ├── docker-compose.yml
@@ -160,9 +159,10 @@ vulnint/
   only their SHA-256 hash is stored. Regenerate in the UI if compromised.
 - Audit log records every authentication, role change, and correlation
   status update.
-- NGINX enforces strict security headers (HSTS, X-Frame-Options,
+- Caddy enforces strict security headers (HSTS, X-Frame-Options,
   X-Content-Type-Options, Referrer-Policy, Permissions-Policy) and
-  per-route rate limits.
+  per-route rate limits. TLS certificates are auto-provisioned via
+  Let's Encrypt — no manual cert management.
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for hardening recommendations.
 

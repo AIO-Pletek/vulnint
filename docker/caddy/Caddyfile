@@ -1,0 +1,107 @@
+# VulnInt — Caddy reverse proxy with automatic TLS
+#
+# Caddy automatically provisions and renews Let's Encrypt certificates.
+# No certbot, no cron jobs, no manual TLS configuration needed.
+#
+# Reference: https://caddyserver.com/docs/caddyfile
+
+vulnint.example.com {
+
+    # ── Security headers (applied to every response) ──────────────────────
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+    }
+
+    # ── Health probe (used by docker-compose healthcheck) ─────────────────
+    handle /healthz {
+        respond "ok" 200
+    }
+
+    # ── Auth endpoints — tighter rate limit ───────────────────────────────
+    handle /api/v1/auth/login {
+        rate_limit {
+            zone dynamic {
+                key {remote_host}
+                events 5/m
+                window 1m
+            }
+        }
+        reverse_proxy api:8000 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # ── Agent inventory ingest — larger body, longer timeout ──────────────
+    handle /api/v1/inventory {
+        request_body {
+            max_size 8MB
+        }
+        reverse_proxy api:8000 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout 120s
+            }
+        }
+    }
+
+    # ── All other API calls ───────────────────────────────────────────────
+    handle /api/* {
+        rate_limit {
+            zone dynamic {
+                key {remote_host}
+                events 120/m
+                window 1m
+            }
+        }
+        reverse_proxy api:8000 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # ── API docs ──────────────────────────────────────────────────────────
+    handle /docs* {
+        reverse_proxy api:8000
+    }
+    handle /redoc* {
+        reverse_proxy api:8000
+    }
+    handle /openapi.json* {
+        reverse_proxy api:8000
+    }
+
+    # ── Health / readiness probes ─────────────────────────────────────────
+    handle /health* {
+        reverse_proxy api:8000
+    }
+    handle /ready* {
+        reverse_proxy api:8000
+    }
+
+    # ── Frontend (Next.js) ────────────────────────────────────────────────
+    handle {
+        reverse_proxy frontend:3000 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # ── Global rate limit fallback ────────────────────────────────────────
+    # rate_limit {
+    #     zone static {
+    #         key {remote_host}
+    #         events 300/m
+    #         window 1m
+    #     }
+    # }
+}
