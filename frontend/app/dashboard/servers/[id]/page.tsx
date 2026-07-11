@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { SeverityBadge } from "@/components/ui/severity-badge";
 import { AuditFindingCard, AuditCategoryLabel } from "@/components/ui/audit-finding-card";
 import * as Dialog from "@radix-ui/react-dialog";
-import { api, fetcher } from "@/lib/api";
+import { api, auth, fetcher } from "@/lib/api";
 import { formatDate, formatRelative } from "@/lib/utils";
 
 type Server = {
@@ -111,9 +111,20 @@ export default function ServerDetailPage() {
                   <div>Added: {formatDate(server.created_at).split(",")[0]}</div>
                   <div className="flex gap-2 mt-2">
                     <Button size="sm" variant="outline" asChild>
-                      <a href={`/api/v1/servers/${id}/report`} target="_blank" rel="noreferrer">
+                      <button
+                        onClick={async () => {
+                          const token = auth.getAccess();
+                          const res = await fetch(`/api/v1/servers/${id}/report`, {
+                            headers: token ? { Authorization: `Bearer ${token}` } : {},
+                          });
+                          if (!res.ok) { alert('Failed to generate report'); return; }
+                          const html = await res.text();
+                          const w = window.open('', '_blank');
+                          if (w) { w.document.write(html); w.document.close(); }
+                        }}
+                      >
                         <FileDown className="h-3 w-3" /> Report
-                      </a>
+                      </button>
                     </Button>
                     <Button size="sm" variant="outline" onClick={regenToken}>
                       <RefreshCw className="h-3 w-3" /> Regen token
