@@ -3,6 +3,9 @@
 # Caddy automatically provisions and renews Let's Encrypt certificates.
 # No certbot, no cron jobs, no manual TLS configuration needed.
 #
+# Rate limiting is handled at the API level by FastAPI's slowapi middleware
+# (see RATE_LIMIT_PER_MINUTE in .env). Caddy focuses on TLS + proxying.
+#
 # Reference: https://caddyserver.com/docs/caddyfile
 
 vulnint.example.com {
@@ -21,15 +24,8 @@ vulnint.example.com {
         respond "ok" 200
     }
 
-    # ── Auth endpoints — tighter rate limit ───────────────────────────────
+    # ── Auth endpoints ────────────────────────────────────────────────────
     handle /api/v1/auth/login {
-        rate_limit {
-            zone dynamic {
-                key {remote_host}
-                events 5/m
-                window 1m
-            }
-        }
         reverse_proxy api:8000 {
             header_up Host {host}
             header_up X-Forwarded-Proto https
@@ -52,15 +48,17 @@ vulnint.example.com {
         }
     }
 
+    # ── Agent download endpoints (public) ─────────────────────────────────
+    handle /api/v1/agents/* {
+        reverse_proxy api:8000 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto https
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
     # ── All other API calls ───────────────────────────────────────────────
     handle /api/* {
-        rate_limit {
-            zone dynamic {
-                key {remote_host}
-                events 120/m
-                window 1m
-            }
-        }
         reverse_proxy api:8000 {
             header_up Host {host}
             header_up X-Forwarded-Proto https
@@ -95,13 +93,4 @@ vulnint.example.com {
             header_up X-Real-IP {remote_host}
         }
     }
-
-    # ── Global rate limit fallback ────────────────────────────────────────
-    # rate_limit {
-    #     zone static {
-    #         key {remote_host}
-    #         events 300/m
-    #         window 1m
-    #     }
-    # }
 }
