@@ -8,7 +8,15 @@
 #
 # Reference: https://caddyserver.com/docs/caddyfile
 
+# GANTI domain dibawah ke domain kamu (contoh: vulnint.cbncloud.net)
 vulnint.example.com {
+
+    # Force production Let's Encrypt (bukan staging)
+    tls {
+        issuer acme {
+            ca https://acme-v02.api.letsencrypt.org/directory
+        }
+    }
 
     # ── Security headers (applied to every response) ──────────────────────
     header {
