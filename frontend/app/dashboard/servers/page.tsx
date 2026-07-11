@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import useSWR, { mutate } from "swr";
-import { Plus, Loader2, Copy, Check, Search } from "lucide-react";
+import { Plus, Loader2, Copy, Check, Search, Download } from "lucide-react";
 import { Topbar } from "@/components/topbar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ export default function ServersPage() {
   const [q, setQ] = React.useState("");
   const [debounced, setDebounced] = React.useState("");
   const [open, setOpen] = React.useState(false);
+  const [downloadOpen, setDownloadOpen] = React.useState(false);
   const [token, setToken] = React.useState<{ id: string; hostname: string; api_token: string } | null>(null);
 
   React.useEffect(() => {
@@ -47,9 +48,14 @@ export default function ServersPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input placeholder="Search hostname or IP…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" />
           </div>
-          <Button onClick={() => setOpen(true)}>
-            <Plus className="h-4 w-4" /> Add server
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setDownloadOpen(true)}>
+              <Download className="h-4 w-4" /> Agent
+            </Button>
+            <Button onClick={() => setOpen(true)}>
+              <Plus className="h-4 w-4" /> Add server
+            </Button>
+          </div>
         </div>
 
         <Card>
@@ -105,6 +111,7 @@ export default function ServersPage() {
 
       <NewServerDialog open={open} setOpen={setOpen} onCreated={(srv) => { setToken(srv); mutate((k: any) => typeof k === "string" && k.startsWith("/servers"), undefined, { revalidate: true }); }} />
       <TokenDialog token={token} setToken={setToken} />
+      <AgentDownloadDialog open={downloadOpen} setOpen={setDownloadOpen} />
     </>
   );
 }
@@ -218,6 +225,115 @@ function TokenDialog({ token, setToken }: { token: any; setToken: (v: any) => vo
               {copied ? "Copied" : "Copy"}
             </Button>
             <Button onClick={() => setToken(null)}>Done</Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function AgentDownloadDialog({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
+  const [os, setOs] = React.useState<"linux" | "windows">("linux");
+  const [copiedCmd, setCopiedCmd] = React.useState(false);
+  const [copiedWget, setCopiedWget] = React.useState(false);
+
+  const apiBase = typeof window !== "undefined" ? `${window.location.protocol}//${window.location.host}` : "";
+
+  const commands: Record<string, { label: string; desc: string; cmd: string; wget: string; wgetLabel: string }> = {
+    linux: {
+      label: "Linux",
+      desc: "Ubuntu, Debian, AlmaLinux, Rocky, CloudLinux",
+      cmd: `curl -fsS ${apiBase}/api/v1/agents/linux/install | sudo bash -s -- ${apiBase} <AGENT_TOKEN>`,
+      wget: `wget ${apiBase}/api/v1/agents/linux/install -O install.sh && sudo bash install.sh ${apiBase} <AGENT_TOKEN>`,
+      wgetLabel: "Atau download lalu jalanin manual:",
+    },
+    windows: {
+      label: "Windows",
+      desc: "Windows Server 2016+ (PowerShell 5.1+)",
+      cmd: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-Expression (Invoke-WebRequest -Uri "${apiBase}/api/v1/agents/windows/install" -UseBasicParsing).Content; Install-Agent -ApiUrl "${apiBase}" -AgentToken "<AGENT_TOKEN>"`,
+      wget: `Invoke-WebRequest -Uri "${apiBase}/api/v1/agents/windows/install" -OutFile "Install-Agent.ps1"; .\\Install-Agent.ps1 -ApiUrl "${apiBase}" -AgentToken "<AGENT_TOKEN>"`,
+      wgetLabel: "Atau download lalu jalanin manual (elevated PowerShell):",
+    },
+  };
+
+  const current = commands[os];
+
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-6 shadow-lg max-h-[90vh] overflow-y-auto">
+          <Dialog.Title className="text-base font-semibold">Download agent installer</Dialog.Title>
+          <Dialog.Description className="text-sm text-muted-foreground mb-4">
+            Jalankan perintah ini di server target. Ganti <code className="bg-muted px-1 rounded text-xs font-mono">&lt;AGENT_TOKEN&gt;</code> dengan token yang didapat saat menambahkan server.
+          </Dialog.Description>
+
+          {/* OS tabs */}
+          <div className="flex gap-1 mb-4 bg-muted rounded-md p-1">
+            {(["linux", "windows"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setOs(t)}
+                className={`flex-1 text-sm rounded-sm py-1.5 font-medium transition-colors ${
+                  os === t ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {commands[t].label}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-xs text-muted-foreground mb-2">{current.desc}</p>
+
+          {/* One-liner command */}
+          <div className="space-y-1.5">
+            <Label>Quick install (copy-paste)</Label>
+            <div className="relative">
+              <pre className="bg-muted rounded-md p-3 pr-12 text-xs font-mono break-all whitespace-pre-wrap overflow-x-auto max-h-32 overflow-y-auto">
+                {current.cmd}
+              </pre>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-2 right-2"
+                onClick={() => { navigator.clipboard.writeText(current.cmd); setCopiedCmd(true); setTimeout(() => setCopiedCmd(false), 1500); }}
+              >
+                {copiedCmd ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Wget / manual download */}
+          <div className="space-y-1.5 mt-3">
+            <Label className="text-xs text-muted-foreground">{current.wgetLabel}</Label>
+            <div className="relative">
+              <pre className="bg-muted rounded-md p-3 pr-12 text-xs font-mono break-all whitespace-pre-wrap overflow-x-auto max-h-24 overflow-y-auto">
+                {current.wget}
+              </pre>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-2 right-2"
+                onClick={() => { navigator.clipboard.writeText(current.wget); setCopiedWget(true); setTimeout(() => setCopiedWget(false), 1500); }}
+              >
+                {copiedWget ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Direct download links */}
+          <div className="mt-4 pt-3 border-t text-xs text-muted-foreground space-y-1">
+            <div className="font-medium text-foreground text-sm mb-1">Direct download links:</div>
+            <a href={`/api/v1/agents/${os}/install`} className="text-primary hover:underline block" target="_blank">
+              📥 {os === "linux" ? "install.sh" : "Install-Agent.ps1"} (installer)
+            </a>
+            <a href={`/api/v1/agents/${os}/agent`} className="text-primary hover:underline block" target="_blank">
+              📄 {os === "linux" ? "vulnint-agent.py" : "vulnint-agent.ps1"} (agent script)
+            </a>
+          </div>
+
+          <div className="flex justify-end mt-4">
+            <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>
