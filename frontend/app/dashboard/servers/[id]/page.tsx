@@ -112,7 +112,6 @@ export default function ServerDetailPage() {
                   <div className="flex gap-2 mt-2">
                     <Button size="sm" variant="outline" asChild>
                       <button
-                        className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
                         onClick={async () => {
                           const token = auth.getAccess();
                           const res = await fetch(`/api/v1/servers/${id}/report`, {
@@ -124,10 +123,11 @@ export default function ServerDetailPage() {
                           if (w) { w.document.write(html); w.document.close(); }
                         }}
                       >
-                        <FileDown className="h-3 w-3" /> View Report
+                        <FileDown className="h-3 w-3" /> View
                       </button>
+                    </Button>
+                    <Button size="sm" variant="outline" asChild>
                       <button
-                        className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
                         onClick={async () => {
                           const token = auth.getAccess();
                           const res = await fetch(`/api/v1/servers/${id}/report?download=1`, {
@@ -141,7 +141,7 @@ export default function ServerDetailPage() {
                           a.click(); URL.revokeObjectURL(url);
                         }}
                       >
-                        <FileDown className="h-3 w-3" /> Download
+                        <FileDown className="h-3 w-3" /> Save
                       </button>
                     </Button>
                     <Button size="sm" variant="outline" onClick={regenToken}>
