@@ -233,10 +233,11 @@ def _render_audit_report(server, findings: list, summary: dict) -> str:
 @router.get("/{server_id}/report", response_class=HTMLResponse)
 async def get_server_report(
     server_id: uuid.UUID,
+    download: bool = Query(False, description="Force download as file"),
     db: AsyncSession = Depends(get_db),
     _: CurrentUser = Depends(require_permissions(Perm.SERVER_READ)),
 ):
-    """Generate an HTML security audit report for this server."""
+    """Generate an HTML security audit report. Add ?download=1 to force download."""
     srv_repo = ServerRepo(db)
     srv = await srv_repo.get(server_id)
     if not srv:
@@ -252,4 +253,7 @@ async def get_server_report(
         summary[key] = summary.get(key, 0) + 1
 
     html = _render_audit_report(srv, findings, summary)
-    return HTMLResponse(content=html)
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="vulnint-audit-{srv.hostname}.html"'
+    return HTMLResponse(content=html, headers=headers)

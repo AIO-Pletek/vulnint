@@ -204,6 +204,10 @@ def _collect_ssh_audit(os_family: str) -> dict[str, Any]:
         macs_raw = cfg.get("macs", "")
         ssh["macs"] = [m.strip() for m in macs_raw.split(",") if m.strip()] if macs_raw else []
         ssh["x11_forwarding"] = cfg.get("x11forwarding", "").lower()
+        ssh["max_auth_tries"] = cfg.get("maxauthtries", "")
+        ssh["client_alive_interval"] = cfg.get("clientaliveinterval", "")
+        ssh["allow_agent_forwarding"] = cfg.get("allowagentforwarding", "")
+        ssh["allow_tcp_forwarding"] = cfg.get("allowtcpforwarding", "")
     except Exception:
         pass
     return ssh
@@ -429,7 +433,7 @@ def _collect_services_audit() -> dict[str, Any]:
 
 
 def _collect_misc_audit() -> dict[str, Any]:
-    """Miscellaneous security checks."""
+    """Miscellaneous security checks: kernel params, service versions, etc."""
     misc: dict[str, Any] = {}
     # World-writable files in /etc
     try:
@@ -439,9 +443,9 @@ def _collect_misc_audit() -> dict[str, Any]:
         )
         misc["world_writable_etc"] = len([l for l in out.splitlines() if l.strip()])
     except Exception:
-        misc["world_writable_etc"] = -1  # couldn't check
+        misc["world_writable_etc"] = -1
 
-    # SUID/SGID count (just count, don't enumerate)
+    # SUID/SGID count
     try:
         out = subprocess.check_output(
             ["find", "/", "-path", "/proc", "-prune", "-o",
@@ -454,6 +458,56 @@ def _collect_misc_audit() -> dict[str, Any]:
         misc["suid_sgid_count"] = len(out)
     except Exception:
         misc["suid_sgid_count"] = -1
+
+    # Kernel security parameters
+    _kernel_params = ["kernel.randomize_va_space", "kernel.kptr_restrict",
+                      "kernel.dmesg_restrict", "kernel.yama.ptrace_scope",
+                      "net.ipv4.ip_forward", "net.ipv4.conf.all.send_redirects",
+                      "net.ipv4.conf.all.accept_source_route",
+                      "fs.protected_symlinks", "fs.protected_hardlinks"]
+    kernel: dict[str, str] = {}
+    for param in _kernel_params:
+        try:
+            out = subprocess.check_output(
+                ["sysctl", "-n", param], stderr=subprocess.DEVNULL, text=True, timeout=3,
+            ).strip()
+            kernel[param] = out
+        except Exception:
+            pass
+    misc["kernel_params"] = kernel
+
+    # Running service versions — capture version strings from known daemons
+    service_versions: dict[str, str] = {}
+    _checks = [
+        ("sshd", ["sshd", "-?"]),
+        ("apache2", ["apache2", "-v"]), ("httpd", ["httpd", "-v"]),
+        ("nginx", ["nginx", "-v"]),
+        ("mysql", ["mysqld", "--version"]), ("mariadb", ["mysqld", "--version"]),
+        ("postgres", ["postgres", "--version"]),
+        ("redis-server", ["redis-server", "--version"]),
+        ("dockerd", ["dockerd", "--version"]),
+        ("named", ["named", "-v"]), ("bind", ["named", "-v"]),
+        ("exim4", ["exim", "-bV"]), ("postfix", ["postconf", "mail_version"]),
+        ("dovecot", ["dovecot", "--version"]),
+        ("php-fpm", ["php-fpm", "-v"]), ("php", ["php", "-v"]),
+        ("node", ["node", "-v"]),
+        ("java", ["java", "-version"]),
+    ]
+    for name, cmd in _checks:
+        try:
+            # Many services output version to stderr; capture both
+            out = subprocess.check_output(
+                cmd, stderr=subprocess.STDOUT, text=True, timeout=5,
+            )
+            # Grab the first meaningful line
+            for line in out.splitlines():
+                line = line.strip()
+                if line and len(line) > 3:
+                    service_versions[name] = line[:256]
+                    break
+        except Exception:
+            pass
+    misc["service_versions"] = service_versions
 
     return misc
 

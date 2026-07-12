@@ -143,6 +143,45 @@ def _rule_ssh_weak_macs(server: Server, ssh: dict) -> Optional[dict]:
     return None
 
 
+def _rule_ssh_max_auth_tries(server: Server, ssh: dict) -> Optional[dict]:
+    val = (ssh or {}).get("max_auth_tries", "")
+    try:
+        n = int(val)
+        if n > 6:
+            return _finding(
+                "ssh_max_auth_tries", AuditCategory.ssh, Severity.low,
+                f"SSH MaxAuthTries is high ({n})",
+                f"MaxAuthTries is set to {n}. Reducing it limits brute-force attempts.",
+                "Set 'MaxAuthTries 3' in /etc/ssh/sshd_config.",
+                {"max_auth_tries": n},
+            )
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _rule_ssh_agent_forwarding(server: Server, ssh: dict) -> Optional[dict]:
+    if (ssh or {}).get("allow_agent_forwarding", "").lower() == "yes":
+        return _finding(
+            "ssh_agent_forwarding", AuditCategory.ssh, Severity.medium,
+            "SSH agent forwarding enabled",
+            "Agent forwarding can allow attackers to hijack SSH agent credentials on compromised hosts.",
+            "Set 'AllowAgentForwarding no' in /etc/ssh/sshd_config unless explicitly required.",
+        )
+    return None
+
+
+def _rule_ssh_tcp_forwarding(server: Server, ssh: dict) -> Optional[dict]:
+    if (ssh or {}).get("allow_tcp_forwarding", "").lower() == "yes":
+        return _finding(
+            "ssh_tcp_forwarding", AuditCategory.ssh, Severity.low,
+            "SSH TCP forwarding enabled",
+            "TCP forwarding can be used to bypass firewall restrictions.",
+            "Set 'AllowTcpForwarding no' in /etc/ssh/sshd_config if not needed.",
+        )
+    return None
+
+
 def _rule_firewall_disabled(server: Server, fw: dict) -> Optional[dict]:
     fw = fw or {}
     active = fw.get("active")
@@ -278,6 +317,168 @@ def _rule_services_dangerous(server: Server, services: dict) -> List[dict]:
     return findings
 
 
+# ── Kernel hardening rules ──────────────────────────────────────────────────
+
+
+def _rule_kernel_hardening(server: Server, misc: dict) -> List[dict]:
+    """Check kernel security parameters via sysctl values."""
+    findings = []
+    kp = (misc or {}).get("kernel_params") or {}
+
+    def _get(param: str) -> str:
+        return kp.get(param, "").strip()
+
+    # ASLR
+    aslr = _get("kernel.randomize_va_space")
+    if aslr and aslr != "2":
+        findings.append(_finding(
+            "kernel_aslr", AuditCategory.misc, Severity.high,
+            f"ASLR not fully enabled (kernel.randomize_va_space={aslr})",
+            "Address Space Layout Randomization (ASLR) is not set to full mode (2).",
+            "Set 'kernel.randomize_va_space = 2' in /etc/sysctl.conf and run sysctl -p.",
+            {"param": "kernel.randomize_va_space", "value": aslr},
+        ))
+
+    # kptr_restrict
+    kptr = _get("kernel.kptr_restrict")
+    if kptr and kptr not in ("1", "2"):
+        findings.append(_finding(
+            "kernel_kptr_restrict", AuditCategory.misc, Severity.medium,
+            f"Kernel pointer restriction not enabled (kernel.kptr_restrict={kptr})",
+            "Kernel pointers are visible to unprivileged users, aiding local privilege escalation.",
+            "Set 'kernel.kptr_restrict = 1' (or 2) in /etc/sysctl.conf.",
+            {"param": "kernel.kptr_restrict", "value": kptr},
+        ))
+
+    # dmesg_restrict
+    dmesg = _get("kernel.dmesg_restrict")
+    if dmesg and dmesg != "1":
+        findings.append(_finding(
+            "kernel_dmesg_restrict", AuditCategory.misc, Severity.low,
+            f"dmesg accessible to users (kernel.dmesg_restrict={dmesg})",
+            "dmesg may leak kernel addresses and other sensitive information.",
+            "Set 'kernel.dmesg_restrict = 1' in /etc/sysctl.conf.",
+            {"param": "kernel.dmesg_restrict", "value": dmesg},
+        ))
+
+    # ptrace scope
+    ptrace = _get("kernel.yama.ptrace_scope")
+    if ptrace and ptrace == "0":
+        findings.append(_finding(
+            "kernel_ptrace", AuditCategory.misc, Severity.medium,
+            "Ptrace scope unrestricted (kernel.yama.ptrace_scope=0)",
+            "Any process can ptrace another, enabling credential theft.",
+            "Set 'kernel.yama.ptrace_scope = 1' in /etc/sysctl.conf.",
+            {"param": "kernel.yama.ptrace_scope", "value": ptrace},
+        ))
+
+    # IP forwarding
+    ipfwd = _get("net.ipv4.ip_forward")
+    if ipfwd and ipfwd == "1":
+        findings.append(_finding(
+            "ip_forwarding", AuditCategory.misc, Severity.low,
+            "IP forwarding enabled",
+            "IP forwarding is on. Ensure this server is intentionally acting as a router.",
+            "Set 'net.ipv4.ip_forward = 0' in /etc/sysctl.conf unless this is a router.",
+            {"param": "net.ipv4.ip_forward", "value": ipfwd},
+        ))
+
+    # Source routing
+    srcroute = _get("net.ipv4.conf.all.accept_source_route")
+    if srcroute and srcroute != "0":
+        findings.append(_finding(
+            "source_routing", AuditCategory.misc, Severity.medium,
+            "Source-routed packets accepted",
+            "Source routing allows attackers to bypass network access controls.",
+            "Set 'net.ipv4.conf.all.accept_source_route = 0' in /etc/sysctl.conf.",
+            {"param": "net.ipv4.conf.all.accept_source_route", "value": srcroute},
+        ))
+
+    return findings
+
+
+def _rule_service_versions(server: Server, misc: dict) -> List[dict]:
+    """Check running service versions for known-outdated patterns."""
+    findings = []
+    versions = (misc or {}).get("service_versions") or {}
+
+    # SSH check for very old versions
+    sshd_ver = versions.get("sshd", "")
+    if sshd_ver and "OpenSSH" in sshd_ver:
+        # e.g. "OpenSSH_7.4p1" — flag versions older than 8.0
+        import re
+        m = re.search(r'OpenSSH[ _](\d+)\.(\d+)', sshd_ver)
+        if m:
+            major, minor = int(m.group(1)), int(m.group(2))
+            if major < 8 or (major == 8 and minor < 0):
+                findings.append(_finding(
+                    "outdated_openssh", AuditCategory.services, Severity.medium,
+                    f"OpenSSH version may be outdated ({sshd_ver[:60]})",
+                    "Older OpenSSH versions may have known vulnerabilities.",
+                    "Upgrade OpenSSH to the latest version via your package manager.",
+                    {"version": sshd_ver[:60]},
+                ))
+
+    # Apache older than 2.4.x
+    for key in ("apache2", "httpd"):
+        if key in versions and "Apache" in versions[key]:
+            import re
+            m = re.search(r'Apache/(\d+)\.(\d+)', versions[key])
+            if m and int(m.group(1)) < 2:
+                findings.append(_finding(
+                    "outdated_apache", AuditCategory.services, Severity.high,
+                    f"Apache HTTPd version outdated ({versions[key][:60]})",
+                    "Very old Apache versions have critical vulnerabilities.",
+                    "Upgrade Apache to the latest 2.4.x release.",
+                    {"version": versions[key][:60]},
+                ))
+                break
+
+    # PHP older than 8.0
+    for key in ("php-fpm", "php"):
+        if key in versions:
+            import re
+            m = re.search(r'PHP (\d+)\.(\d+)', versions[key])
+            if m and int(m.group(1)) < 8:
+                findings.append(_finding(
+                    "outdated_php", AuditCategory.services, Severity.high,
+                    f"PHP version is end-of-life ({versions[key][:60]})",
+                    "PHP versions before 8.0 are no longer receiving security updates.",
+                    "Upgrade PHP to 8.1+ or 8.3+ LTS.",
+                    {"version": versions[key][:60]},
+                ))
+                break
+
+    # Node.js older than 18
+    node_ver = versions.get("node", "")
+    if node_ver and node_ver.startswith("v"):
+        import re
+        m = re.search(r'v(\d+)\.', node_ver)
+        if m and int(m.group(1)) < 18:
+            findings.append(_finding(
+                "outdated_node", AuditCategory.services, Severity.medium,
+                f"Node.js version may be EOL ({node_ver[:60]})",
+                "Older Node.js versions no longer receive security patches.",
+                "Upgrade Node.js to 18 LTS or 20 LTS.",
+                {"version": node_ver[:60]},
+            ))
+
+    # Nginx older than 1.20
+    if "nginx" in versions:
+        import re
+        m = re.search(r'nginx/(\d+)\.(\d+)', versions["nginx"])
+        if m and (int(m.group(1)) < 1 or (int(m.group(1)) == 1 and int(m.group(2)) < 20)):
+            findings.append(_finding(
+                "outdated_nginx", AuditCategory.services, Severity.medium,
+                f"Nginx version outdated ({versions['nginx'][:60]})",
+                "Older Nginx versions may have known vulnerabilities.",
+                "Upgrade Nginx to the latest stable release.",
+                {"version": versions["nginx"][:60]},
+            ))
+
+    return findings
+
+
 # ── Windows rules ─────────────────────────────────────────────────────────
 
 
@@ -393,17 +594,27 @@ def _rule_win_dangerous_services(server: Server, services: dict) -> List[dict]:
 # Each entry: (applies_to_fn, facts_key, rule_fn)
 # Multiple rules can consume the same facts key.
 _LINUX_RULES: List = [
+    # SSH hardening
     ("ssh", _rule_ssh_root_login),
     ("ssh", _rule_ssh_password_auth),
     ("ssh", _rule_ssh_protocol),
     ("ssh", _rule_ssh_weak_ciphers),
     ("ssh", _rule_ssh_weak_macs),
+    ("ssh", _rule_ssh_max_auth_tries),
+    ("ssh", _rule_ssh_agent_forwarding),
+    ("ssh", _rule_ssh_tcp_forwarding),
+    # Firewall
     ("firewall", _rule_firewall_disabled),
     ("firewall", _rule_firewall_default_allow),
+    # OS updates
     ("updates", _rule_updates_stale),
     ("updates", _rule_updates_pending_security),
     ("updates", _rule_updates_unattended),
+    # Services + versions
     ("services", _rule_services_dangerous),
+    ("misc", _rule_service_versions),
+    # Kernel hardening
+    ("misc", _rule_kernel_hardening),
 ]
 
 _WINDOWS_RULES: List = [
