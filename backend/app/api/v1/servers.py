@@ -204,7 +204,7 @@ async def update_finding_status(
 
 # ── Report generation ──────────────────────────────────────────────────────
 
-_TEMPLATES_DIR = Path(__file__).resolve().parents[4] / "app" / "templates"
+_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 _jinja = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
 
 
